@@ -645,8 +645,5 @@ bool BPFDAGToDAGISel::checkLoadDef(unsigned DefReg, unsigned match_load_op) {
 }
 
 FunctionPass *llvm::createBPFISelDag(BPFTargetMachine &TM) {
-  dbgs() << __FILE__ << " " << __LINE__ << "\n";
-  FunctionPass *pass = new BPFDAGToDAGISel(TM);
-  dbgs() << __FILE__ << " " << __LINE__ << "\n";
-  return pass;
+  return new BPFDAGToDAGISel(TM);
 }
