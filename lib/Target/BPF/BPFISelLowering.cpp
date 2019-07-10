@@ -45,20 +45,6 @@ static void fail(const SDLoc &DL, SelectionDAG &DAG, const Twine &Msg) {
   dbgs() << "Warning: " <<  Msg << '\n';
 }
 
-static void fail(const SDLoc &DL, SelectionDAG &DAG, const char *Msg,
-                 SDValue Val) {
-  MachineFunction &MF = DAG.getMachineFunction();
-  std::string Str;
-  raw_string_ostream OS(Str);
-  OS << Msg;
-  Val->print(OS);
-  OS.flush();
-  DAG.getContext()->diagnose(
-      DiagnosticInfoUnsupported(MF.getFunction(), Str, DL.getDebugLoc()));
-
-  dbgs() << "Warning: " <<  Msg << '\n';
-}
-
 BPFTargetLowering::BPFTargetLowering(const TargetMachine &TM,
                                      const BPFSubtarget &STI)
     : TargetLowering(TM) {
@@ -210,6 +196,9 @@ SDValue BPFTargetLowering::LowerFormalArguments(
     SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
     const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
+
+  dbgs() << "LowerFormalArgumemts\n";
+
   switch (CallConv) {
   default:
     report_fatal_error("Unsupported calling convention");
@@ -224,8 +213,18 @@ SDValue BPFTargetLowering::LowerFormalArguments(
   // Assign locations to all of the incoming arguments.
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
-  CCInfo.AnalyzeFormalArguments(Ins, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+  // CCInfo.AnalyzeFormalArguments(Ins, getHasAlu32() ? CC_BPF32 : CC_BPF64);
 
+  // dbgs() << "Ins " << Ins.size() << "\n";
+  if (Ins.size() > MaxArgs) {
+    dbgs() << "Ins " << Ins.size() << "\n";
+    // fail(CLI.DL, DAG, "BPF supports a maximum of 5 arguments Yo!", Callee);
+    CCInfo.AnalyzeFormalArguments(Ins, getHasAlu32() ? CC_BPF32_X : CC_BPF64_X);
+  } else {
+    CCInfo.AnalyzeFormalArguments(Ins, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+  }
+
+  int FI = 0;
   for (auto &VA : ArgLocs) {
     if (VA.isRegLoc()) {
       // Arguments passed in registers
@@ -262,8 +261,40 @@ SDValue BPFTargetLowering::LowerFormalArguments(
         break;
       }
     } else {
-      fail(DL, DAG, "BPF supports a maximum of 5 arguments");
-      InVals.push_back(DAG.getConstant(0, DL, VA.getLocVT()));
+      dbgs() << "stack arg\n";
+
+      // fail(DL, DAG, "defined with too many args");
+      // InVals.push_back(DAG.getConstant(0, DL, VA.getLocVT()));
+
+      assert(VA.isMemLoc() && "Should be isMemLoc");
+
+      EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout());
+      EVT LocVT = VA.getLocVT();
+
+      unsigned reg = MF.addLiveIn(BPF::R5, &BPF::GPRRegClass);
+      SDValue Const = DAG.getConstant(8 * FI++, DL, MVT::i64);
+      SDValue SDV = DAG.getCopyFromReg(Chain, DL, reg, getPointerTy(MF.getDataLayout()));
+      SDV = DAG.getNode(ISD::ADD, DL, PtrVT, SDV, Const);
+      SDV = DAG.getLoad(LocVT, DL, Chain, SDV,
+                                   MachinePointerInfo(),
+                                   0);
+      InVals.push_back(SDV);
+
+    // Make sure this register copy is chained with the rest of the parameters passed in registers below.
+    // Chain = DAG.getCopyToReg(Chain, CLI.DL, BPF::R5, FramePtr, InFlag);
+
+      // // Create the frame index object for this incoming parameter.
+      // MachineFrameInfo &MFI = MF.getFrameInfo();
+      // int FI = MFI.CreateFixedObject(LocVT.getSizeInBits() / 8,
+      //                                VA.getLocMemOffset(), true);
+
+      // // Create the SelectionDAG nodes corresponding to a load
+      // // from this parameter.
+      // dbgs() << "FI " << FI << "\n";
+      // SDValue FIN = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
+      // InVals.push_back(DAG.getLoad(LocVT, DL, Chain, FIN,
+      //                              MachinePointerInfo::getFixedStack(MF, FI),
+      //                              0));
     }
   }
 
@@ -290,6 +321,8 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   bool IsVarArg = CLI.IsVarArg;
   MachineFunction &MF = DAG.getMachineFunction();
 
+  dbgs() << "LowerCall\n";
+
   // BPF target does not support tail call optimization.
   IsTailCall = false;
 
@@ -305,12 +338,20 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
 
-  CCInfo.AnalyzeCallOperands(Outs, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+  // CCInfo.AnalyzeCallOperands(Outs, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+
+  // unsigned NumBytes = CCInfo.getNextStackOffset();
+
+  // dbgs() << "Outs " << Outs.size() << "\n";
+  if (Outs.size() > MaxArgs) {
+    dbgs() << "Outs " << Outs.size() << "\n";
+    // fail(CLI.DL, DAG, "BPF supports a maximum of 5 arguments Yo!", Callee);
+    CCInfo.AnalyzeCallOperands(Outs, getHasAlu32() ? CC_BPF32_X : CC_BPF64_X);
+  } else {
+    CCInfo.AnalyzeCallOperands(Outs, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+  }
 
   unsigned NumBytes = CCInfo.getNextStackOffset();
-
-  if (Outs.size() > MaxArgs)
-    fail(CLI.DL, DAG, "BPF supports a maximum of 5 arguments ", Callee);
 
   auto PtrVT = getPointerTy(MF.getDataLayout());
   Chain = DAG.getCALLSEQ_START(Chain, NumBytes, 0, CLI.DL);
@@ -318,11 +359,17 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   SmallVector<std::pair<unsigned, SDValue>, MaxArgs> RegsToPass;
 
   // Walk arg assignments
-  for (unsigned i = 0,
-                e = std::min(static_cast<unsigned>(ArgLocs.size()), MaxArgs);
-       i != e; ++i) {
-    CCValAssign &VA = ArgLocs[i];
-    SDValue Arg = OutVals[i];
+  // for (unsigned i = 0,
+  //               e = std::min(static_cast<unsigned>(ArgLocs.size()), MaxArgs);
+  //               i != e; ++i) {
+  //   CCValAssign &VA = ArgLocs[i];
+  //   SDValue Arg = OutVals[i];
+
+  unsigned AI, AE;
+  bool HasStackArgs = false;
+  for (AI = 0, AE = ArgLocs.size(); AI != AE; ++AI) {
+    CCValAssign &VA = ArgLocs[AI];
+    SDValue Arg = OutVals[AI];
 
     // Promote the value if needed.
     switch (VA.getLocInfo()) {
@@ -341,6 +388,11 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       break;
     }
 
+    if (VA.isMemLoc()) {
+      HasStackArgs = true;
+      break;
+    }
+
     // Push arguments into RegsToPass vector
     if (VA.isRegLoc())
       RegsToPass.push_back(std::make_pair(VA.getLocReg(), Arg));
@@ -348,15 +400,77 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       llvm_unreachable("call arg pass bug");
   }
 
-  SDValue InFlag;
+  if (HasStackArgs) {
+    SDValue FramePtr = DAG.getCopyFromReg(Chain, CLI.DL, BPF::R10, getPointerTy(MF.getDataLayout()));
+
+    for (AE = AI, AI = ArgLocs.size(); AI != AE; --AI) {
+      unsigned Loc = AI - 1;
+      CCValAssign &VA = ArgLocs[Loc];
+      SDValue Arg = OutVals[Loc];
+      // EVT LocVT = VA.getLocVT();
+
+      assert(VA.isMemLoc());
+
+      dbgs() << "Arg " << AI << "\n";
+
+      // // Create the frame index object for this incoming parameter.
+      // MachineFrameInfo &MFI = MF.getFrameInfo();
+      // int FI = MFI.CreateFixedObject(LocVT.getSizeInBits() / 8,
+      //                                VA.getLocMemOffset(), true);
+
+      // // Create the SelectionDAG nodes corresponding to a store
+      // // from this parameter.
+      // dbgs() << "FI " << FI << "\n";
+      // SDValue FIN = DAG.getFrameIndex(FI, getPointerTy(DAG.getDataLayout()));
+      // Chain = DAG.getStore(Chain, CLI.DL, Arg, FIN,
+      //                              MachinePointerInfo::getFixedStack(MF, FI),
+      //                              0);
+      // InFlag = Chain.getValue(1);
+      
+      SDValue PtrOff = DAG.getObjectPtrOffset(CLI.DL, FramePtr, VA.getLocMemOffset());
+
+      dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+      SDLoc &DL = CLI.DL;
+      Chain = DAG.getStore(Chain, DL, Arg, PtrOff, MachinePointerInfo());
+
+      dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+      // InFlag = Chain.getValue(1);
+
+      dbgs() << __FILE__ << " " << __LINE__ << "\n";
+    }
+
+    dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+    {
+        dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+        SDValue FramePtr = DAG.getCopyFromReg(Chain, CLI.DL, BPF::R10, getPointerTy(MF.getDataLayout()));
+
+        dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+        Chain = DAG.getCopyToReg(Chain, CLI.DL, BPF::R5, FramePtr);
+
+        dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+        // InFlag = Chain.getValue(1);
+    }
+
+    dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+  }
 
   // Build a sequence of copy-to-reg nodes chained together with token chain and
-  // flag operands which copy the outgoing args into registers.  The InFlag in
+  // flag operands which copy the outgoing args into registers.  The InFlag is
   // necessary since all emitted instructions must be stuck together.
+  SDValue InFlag;
   for (auto &Reg : RegsToPass) {
     Chain = DAG.getCopyToReg(Chain, CLI.DL, Reg.first, Reg.second, InFlag);
     InFlag = Chain.getValue(1);
   }
+
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
 
   // If the callee is a GlobalAddress node (quite common, every direct call is)
   // turn it into a TargetGlobalAddress node so that legalize doesn't hack it.
@@ -366,6 +480,7 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
                                         G->getOffset(), 0);
   } else if (ExternalSymbolSDNode *E = dyn_cast<ExternalSymbolSDNode>(Callee)) {
     Callee = DAG.getTargetExternalSymbol(E->getSymbol(), PtrVT, 0);
+    dbgs() << "Call to built-in function: " << StringRef(E->getSymbol()) << "\n";
     // This is not a warning but info, will be resolved on load
     // fail(CLI.DL, DAG, Twine("A call to built-in function '"
     //                         + StringRef(E->getSymbol())
@@ -378,22 +493,37 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   Ops.push_back(Chain);
   Ops.push_back(Callee);
 
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+
   // Add argument registers to the end of the list so that they are
   // known live into the call.
   for (auto &Reg : RegsToPass)
     Ops.push_back(DAG.getRegister(Reg.first, Reg.second.getValueType()));
 
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
+if (HasStackArgs) {
+  Ops.push_back(DAG.getRegister(BPF::R5, MVT::i64));
+}
+
   if (InFlag.getNode())
     Ops.push_back(InFlag);
 
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
+
   Chain = DAG.getNode(BPFISD::CALL, CLI.DL, NodeTys, Ops);
   InFlag = Chain.getValue(1);
+
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
 
   // Create the CALLSEQ_END node.
   Chain = DAG.getCALLSEQ_END(
       Chain, DAG.getConstant(NumBytes, CLI.DL, PtrVT, true),
       DAG.getConstant(0, CLI.DL, PtrVT, true), InFlag, CLI.DL);
   InFlag = Chain.getValue(1);
+
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
 
   // Handle result values, copying them out of physregs into vregs that we
   // return.
@@ -404,9 +534,18 @@ SDValue BPFTargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 bool BPFTargetLowering::CanLowerReturn(
     CallingConv::ID CallConv, MachineFunction &MF, bool IsVarArg,
     const SmallVectorImpl<ISD::OutputArg> &Outs, LLVMContext &Context) const {
+
+  dbgs() << "CanLowerReturn\n";
+
   // At minimal return Outs.size() <= 1, or check valid types in CC.
   SmallVector<CCValAssign, 16> RVLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, RVLocs, Context);
+  // if (Outs.size() > MaxArgs) {
+  //   // fail(CLI.DL, DAG, "BPF supports a maximum of 5 arguments Yo!", Callee);
+  //   return CCInfo.CheckReturn(Outs, getHasAlu32() ? CC_BPF32_X : CC_BPF64_X);
+  // } else {
+  //   return CCInfo.CheckReturn(Outs, getHasAlu32() ? CC_BPF32 : CC_BPF64);
+  // }
   return CCInfo.CheckReturn(Outs, getHasAlu32() ? RetCC_BPF32 : RetCC_BPF64);
 }
 
@@ -416,6 +555,9 @@ BPFTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
                                const SmallVectorImpl<ISD::OutputArg> &Outs,
                                const SmallVectorImpl<SDValue> &OutVals,
                                const SDLoc &DL, SelectionDAG &DAG) const {
+
+  dbgs() << "LowerReturn\n";
+
   unsigned Opc = BPFISD::RET_FLAG;
 
   // CCValAssign - represent the assignment of the return value to a location
@@ -430,6 +572,13 @@ BPFTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
     assert(false);
   }
   CCInfo.AnalyzeReturn(Outs, getHasAlu32() ? RetCC_BPF32 : RetCC_BPF64);
+
+  // if (Outs.size() > MaxArgs) {
+  //   // fail(CLI.DL, DAG, "BPF supports a maximum of 5 arguments Yo!", Callee);
+  //   CCInfo.AnalyzeReturn(Outs, getHasAlu32() ? CC_BPF32_X : CC_BPF64_X);
+  // } else {
+  //   CCInfo.AnalyzeReturn(Outs, getHasAlu32() ? RetCC_BPF32 : RetCC_BPF64);
+  // }
 
   SDValue Flag;
   SmallVector<SDValue, 4> RetOps(1, Chain);
@@ -480,6 +629,8 @@ SDValue BPFTargetLowering::LowerCallResult(
     InFlag = Chain.getValue(2);
     InVals.push_back(Chain.getValue(0));
   }
+
+  dbgs() << __FILE__ << " " << __LINE__ << "\n";
 
   return Chain;
 }
